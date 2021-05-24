@@ -472,8 +472,9 @@ def test_fuse_independent_array(fortran_reader, fortran_writer):
 
     with pytest.raises(TransformationError) as err:
         fuse_loops(code, fortran_reader, fortran_writer)
-    assert "Variable 's' does not depend on loop variable 'jj', but is " \
-           "read and written" in str(err.value)
+    assert "Variable 's' is independent of loop variable 'jj' and is " \
+           "written in one loop, but only read in the other loop."\
+           in str(err.value)
 
 
 # ----------------------------------------------------------------------------
@@ -521,8 +522,9 @@ def test_fuse_scalars(tmpdir, fortran_reader, fortran_writer):
 
     with pytest.raises(TransformationError) as err:
         fuse_loops(code, fortran_reader, fortran_writer)
-    assert "Scalar variable 'a' is written in one loop, but only read in " \
-           "the other loop." in str(err.value)
+    assert "Variable 'a' is independent of loop variable 'jj' and is " \
+           "written in one loop, but only read in the other loop."\
+           in str(err.value)
 
     # Third test: write/read of scalar variable
     code = '''subroutine sub()
@@ -544,8 +546,9 @@ def test_fuse_scalars(tmpdir, fortran_reader, fortran_writer):
 
     with pytest.raises(TransformationError) as err:
         fuse_loops(code, fortran_reader, fortran_writer)
-    assert "Scalar variable 'b' is written in one loop, but only read in " \
-           "the other loop." in str(err.value)
+    assert "Variable 'b' is independent of loop variable 'jj' and is " \
+           "written in one loop, but only read in the other loop."\
+           in str(err.value)
 
     # Fourth test: write/write of scalar variable - this is ok
     code = '''subroutine sub()

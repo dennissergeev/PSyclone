@@ -210,30 +210,6 @@ class DependencyTools(object):
                     found_dimension_index = ind_pair
                     all_indices.append(index_expression)
 
-        if not all_indices:
-            # An array is used that is not actually dependent on the parallel
-            # loop variable. This means the variable can not always be safely
-            # parallelised. Example 1:
-            # do j=1, n
-            #    a(1) = b(j)+1
-            #    c(j) = a(1) * 2
-            # enddo
-            # In this case a(1) should be a thread-private scalar.
-            # Example2:
-            # do j=1, n
-            #    if(some_cond)
-            #       a(1) = b(j)
-            #    endif
-            #  enddo
-            # In this case it is not clear if the loop can be parallelised.
-            # So in any case we add the information for the user to decide.
-            self._add_warning("Variable '{0}' is written to, and "
-                              "does not depend on the loop "
-                              "variable '{1}'."
-                              .format(var_info.var_name,
-                                      loop_variable))
-            return False
-
         # Now we have confirmed that all parallel accesses to the variable
         # are using the same dimension. If there is a case of stencil
         # access with write operations (read-only has already been tested)
@@ -255,12 +231,18 @@ class DependencyTools(object):
         return True
 
     # -------------------------------------------------------------------------
-    def is_scalar_parallelisable(self, var_info):
+    def is_scalar_parallelisable(self, loop_variable, var_info):
         '''Checks if the accesses to the given scalar variable can be
-        parallelised, i.e. it is not a reduction.
+        parallelised, i.e. it is not a reduction. Note that this function is
+        also used for array variables which are accessed without the use of
+        the loop variable (e.g. a(i) = sin(b(j)) - a(i) is considered a scalar
+        access if the parallelised loop is using 'j').
 
+        :param str loop_variable: name of the variable that is parallelised \
+            (only used for error messages).
         :param var_info: the access information for the variable to test.
         :type var_info: :py:class:`psyclone.core.var_info.VariableInfo`
+
         :return: True if the scalar variable is not a reduction, i.e. it \
             can be parallelised.
         '''
@@ -277,8 +259,9 @@ class DependencyTools(object):
             # has already been tested above, so it must be a write access here,
             # which prohibits parallelisation.
             # We could potentially use lastprivate here?
-            self._add_warning("Scalar variable '{0}' is only written once."
-                              .format(var_info.var_name))
+            self._add_warning("Variable '{0}' is only written once, and does "
+                              "not depend on the loop variable '{1}'."
+                              .format(var_info.var_name, loop_variable))
             return False
 
         # Now we have at least two accesses. If the first access is a WRITE,
@@ -377,7 +360,8 @@ class DependencyTools(object):
             var_info = var_accesses[signature]
             symbol_table = loop.scope.symbol_table
             symbol = symbol_table.lookup(var_name)
-            is_array = symbol.is_used_as_array(access_info=var_info)
+            is_array = symbol.is_used_as_array(access_info=var_info,
+                                               index_variable=loop_variable)
 
             if is_array:
                 # Handle arrays
@@ -385,7 +369,8 @@ class DependencyTools(object):
                                                         var_info)
             else:
                 # Handle scalar variable
-                par_able = self.is_scalar_parallelisable(var_info)
+                par_able = self.is_scalar_parallelisable(loop_variable,
+                                                         var_info)
             if not par_able:
                 if not test_all_variables:
                     return False

@@ -92,12 +92,14 @@ class NemoLoopFuseTrans(LoopFuseTrans):
         vars1 = VariablesAccessInfo(node1)
         vars2 = VariablesAccessInfo(node2)
 
-        # Get all variables that occur in both loops. A variable
-        # that is only in one loop is not affected by fusion.
-        all_vars = set(vars1).intersection(vars2)
+        # Get all variable signatures that occur in both loops. A variable
+        # that is only in one loop is not affected by fusion and can be
+        # ignored. Notice that the 'set' takes the keys of each
+        # VariablesAccessInfo.
+        all_signatures = set(vars1).intersection(vars2)
         symbol_table = node1.scope.symbol_table
 
-        for signature in all_vars:
+        for signature in all_signatures:
             var_name = str(signature)
             # Ignore the loop variable
             if var_name == loop_var1.name:
@@ -110,17 +112,20 @@ class NemoLoopFuseTrans(LoopFuseTrans):
                 continue
 
             symbol = symbol_table.lookup(var_name)
-            is_array = symbol.is_used_as_array(access_info=var_info1)
+            # Check if this
+            is_array = symbol.is_used_as_array(access_info=var_info1,
+                                               index_variable=loop_var1.name)
 
             if not is_array:
-                NemoLoopFuseTrans.validate_written_scalar(var_info1, var_info2)
+                NemoLoopFuseTrans.validate_written_scalar(var_info1, var_info2,
+                                                          loop_var1)
             else:
                 NemoLoopFuseTrans.validate_written_array(var_info1, var_info2,
                                                          loop_var1)
 
     # -------------------------------------------------------------------------
     @staticmethod
-    def validate_written_scalar(var_info1, var_info2):
+    def validate_written_scalar(var_info1, var_info2, loop_variable):
         '''Validates if the accesses to a scalar that is at least written once
         allows loop fusion. The accesses of the variable is contained in the
         two parameters (which also include the name of the variable).
@@ -129,6 +134,10 @@ class NemoLoopFuseTrans(LoopFuseTrans):
         :type var_info1: :py:class:`psyclone.core.var_info.VariableInfo`
         :param var_info2: access information for variable in the second loop.
         :type var_info2: :py:class:`psyclone.core.var_info.VariableInfo`
+        :param loop_variable: symbol of the variable associated with the \
+            loops being fused (only used for error messages).
+        :type loop_variable: \
+            :py:class:`psyclone.psyir.symbols.datasymbol.DataSymbol`
 
         :raises TransformationError: a scalar variable is written in one \
             loop, but only read in the other.
@@ -147,8 +156,9 @@ class NemoLoopFuseTrans(LoopFuseTrans):
             return
 
         raise TransformationError(
-            "Scalar variable '{0}' is written in one loop, but only read "
-            "in the other loop.".format(var_info1.var_name))
+            "Variable '{0}' is independent of loop variable '{1}' and is "
+            "written in one loop, but only read in the other loop."
+            .format(var_info1.var_name, loop_variable.name))
 
     # -------------------------------------------------------------------------
     @staticmethod
@@ -229,24 +239,3 @@ class NemoLoopFuseTrans(LoopFuseTrans):
 
                     found_dimension_index = ind_pair
                     all_indices.append(index_expression)
-
-        if not all_indices:
-            # An array is used that is not actually dependent on the
-            # loop variable. This means the variable can not always be safely
-            # fused.
-            # do j=1, n
-            #    a(1) = b(j)+1
-            # enddo
-            # do j=1, n
-            #    c(j) = a(1) * 2
-            # enddo
-            # More tests could be done here, e.g. to see if it can be shown
-            # that each access in the first loop is different from the
-            # accesses in the second loop: a(1) in first, a(2) in second.
-            # Other special cases: reductions (a(1) = a(1) + x),
-            # array expressions : a(:) = b(j) * x(:)
-            # Potentially this could use the scalar handling code!
-            raise TransformationError(
-                "Variable '{0}' does not depend on loop variable '{1}', "
-                "but is read and written.".format(var_info1.var_name,
-                                                  loop_variable.name))

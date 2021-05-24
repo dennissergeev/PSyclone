@@ -169,8 +169,8 @@ def test_arrays_parallelise(parser):
     # Test that right default variable name (outer loop jj) is used.
     parallel = dep_tools.can_loop_be_parallelised(loops[0])
     assert not parallel
-    assert "Variable 'mask' is written to, and does not depend on the loop "\
-           "variable 'jj'" in dep_tools.get_all_messages()[0]
+    assert "Variable 'mask' is only written once, and does not depend on " \
+           "the loop variable 'jj'" in dep_tools.get_all_messages()[0]
 
     # Write to array that does not depend on parallel loop variable
     parallel = dep_tools.can_loop_be_parallelised(loops[1], "jj")
@@ -255,8 +255,9 @@ def test_scalar_parallelise(declaration, variable, parser):
     # Write only scalar variable: a(ji, jj) = b
     parallel = dep_tools.can_loop_be_parallelised(loops[1], "jj")
     assert not parallel
-    assert "Scalar variable '{0}' is only written once".format(variable) \
-        in dep_tools.get_all_messages()[0]
+    assert "Variable '{0}' is only written once, and does not depend on the " \
+           "loop variable 'jj'.".format(variable) \
+           in dep_tools.get_all_messages()[0]
 
     # Write to scalar variable happens first
     parallel = dep_tools.can_loop_be_parallelised(loops[2], "jj")

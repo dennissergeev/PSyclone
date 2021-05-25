@@ -201,6 +201,17 @@ class SingleVariableAccessInfo(object):
         '''
         return str(self._signature)
 
+    def get_all_accesses_of_type(self, access_type):
+        '''Returns all access in var_info of the given type.
+
+        :param access_type: the type of access (READ, WRITE, ....)
+        :type access_type: \
+            :py:class:`psyclone.core.access_type.AccessType`
+
+        '''
+        return [access for access in self.all_accesses
+                if access.access_type is access_type]
+
     def is_written(self):
         ''':returns: True if this variable is written (at least once).
         :rtype: bool

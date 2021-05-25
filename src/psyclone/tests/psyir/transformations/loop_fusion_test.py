@@ -572,6 +572,7 @@ def test_fuse_scalars(tmpdir, fortran_reader, fortran_writer):
     assert Compile(tmpdir).string_compiles(out)
 
 
+# ----------------------------------------------------------------------------
 @pytest.mark.xfail(reason="Variable usage does not handle conditional - #641")
 def test_fuse_scalars_incorrect(fortran_reader, fortran_writer):
     '''This example incorrectly allows loop fusion due to known
@@ -681,3 +682,35 @@ def test_fuse_no_symbol(fortran_reader, fortran_writer):
         t(ji,jj) = s(ji,jj) + t(ji,jj)
       enddo
     enddo""" in out
+
+
+# ----------------------------------------------------------------------------
+@pytest.mark.parametrize("offset", ["-1", "", "+1"])
+def test_fuse_write_read(fortran_reader, fortran_writer, offset):
+    '''Test various write followed by read accesses with various
+    array values.
+    '''
+    # This cannot be fused, since 's' is written in the
+    # first iteration and read in the second.
+    code = '''subroutine sub()
+              integer :: ji, jj, n
+              integer, dimension(10,10) :: s, t, u
+              do jj=1, n+1
+                 do ji=1, 10
+                    s(ji, jj)=t(ji, jj)+1
+                    s(ji, jj+1)=t(ji, jj)+1
+                 enddo
+              enddo
+              do jj=1, n+1
+                 do ji=1, 10
+                    u(ji, jj)=s(ji, jj{0})+1
+                 enddo
+              enddo
+              end subroutine sub'''.format(offset)
+
+    if offset == "+1":
+        with pytest.raises(TransformationError) as err:
+            _, _ = fuse_loops(code, fortran_reader, fortran_writer)
+        print("Error is", str(err.value))
+    else:
+        _, _ = fuse_loops(code, fortran_reader, fortran_writer)

@@ -239,3 +239,45 @@ class NemoLoopFuseTrans(LoopFuseTrans):
 
                     found_dimension_index = ind_pair
                     all_indices.append(index_expression)
+
+        if var_info1.is_written():
+            # Collect all write statements in first loop so that all indices
+            # can be compared.
+            write_in_first = \
+                var_info1.get_all_accesses_of_type(AccessType.WRITE)
+
+            # Check for write-read conditions, e.g.:
+            # loop1:  s(j) = 1
+            # loop2:  x(j) = s(j+1)
+            # Without loop fuse, s(j+1) is the new value, with loop fuse
+            # s(j+1) is still the old value
+            all_read_in_second = []
+            for access in var_info2.all_accesses:
+                # Once the variable is written in the
+                if access.access_type == AccessType.WRITE:
+                    break
+                all_read_in_second.append(access)
+            if not NemoLoopFuseTrans.\
+                first_always_before_second(write_in_first, all_read_in_second,
+                                           found_dimension_index):
+                raise TransformationError("Cant fuse")
+
+    def first_always_before_second(all_accesses1, all_accesses2, indices):
+        '''Tests that all
+        '''
+
+        from psyclone.core.symbolic_maths import SymbolicMaths
+        sm = SymbolicMaths.get()
+
+        for access1 in all_accesses1:
+            ind1 = access1.indices_groups[indices[0]][indices[1]]
+            for access2 in all_accesses2:
+                ind2 = access2.indices_groups[indices[0]][indices[1]]
+                result = sm.greater_equal(ind1, ind2)
+                try:
+                    if not result:
+                        return False
+                except TypeError:
+                    # Raised when it can't be decided
+                    return False
+        return True

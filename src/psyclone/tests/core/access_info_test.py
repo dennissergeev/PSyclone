@@ -143,6 +143,10 @@ def test_variable_access_info():
     vai.add_access_with_location(AccessType.WRITE, 3, Node())
     assert vai.is_read_only() is False
 
+    # There is one read, and two write statements:
+    assert len(vai.get_all_accesses_of_type(AccessType.READ)) == 1
+    assert len(vai.get_all_accesses_of_type(AccessType.WRITE)) == 2
+
 
 # -----------------------------------------------------------------------------
 def test_variable_access_info_is_array():

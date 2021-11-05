@@ -8461,6 +8461,15 @@ class DynKernelArguments(Arguments):
 
         return self._raw_arg_list
 
+    def psyir_expressions(self):
+        '''
+        :returns: the PSyIR expressions representing this Argument list.
+        :rtype: list of :py:class:`psyclone.psyir.nodes.Node`
+
+        '''
+        symtab = self._parent_call.scope.symbol_table
+        return [arg.psyir_expression() for arg in self.args]
+
     @property
     def acc_args(self):
         '''

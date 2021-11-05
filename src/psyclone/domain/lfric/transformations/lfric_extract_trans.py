@@ -41,8 +41,12 @@ transformation.
 
 from psyclone.dynamo0p3 import DynLoop
 from psyclone.psyir.transformations import ExtractTrans, TransformationError
+from psyclone.domain.lfric. lfric_extract_driver_creator \
+    import LFRicExtractDriverCreator
+from psyclone.psyir.nodes import ExtractNode
 
-# TODO: #1392 we need to call driver creation here.
+from psyclone.psyir.symbols import REAL8_TYPE, INTEGER_TYPE
+from psyclone.psyir.tools import DependencyTools
 
 
 class LFRicExtractTrans(ExtractTrans):
@@ -64,7 +68,15 @@ class LFRicExtractTrans(ExtractTrans):
     >>> # Apply LFRicExtractTrans transformation to selected Nodes
     >>> etrans.apply(schedule.children[0:3])
     >>> schedule.view()
+
     '''
+    def __init__(self):
+        super(LFRicExtractTrans, self).__init__(ExtractNode)
+        # Set the integer and real types to use. If required, the constructor
+        # could take a parameter to change these.
+
+        self._driver_creator = LFRicExtractDriverCreator(INTEGER_TYPE,
+                                                         REAL8_TYPE)
 
     def validate(self, node_list, options=None):
         ''' Perform Dynamo0.3 API specific validation checks before applying
@@ -96,3 +108,39 @@ class LFRicExtractTrans(ExtractTrans):
                     "Error in {0} for Dynamo0.3 API: Extraction of a Loop "
                     "over cells in a colour without its ancestor Loop over "
                     "colours is not allowed.".format(str(self.name)))
+
+    # ------------------------------------------------------------------------
+    def apply(self, nodes, options=None):
+
+        if options is None:
+            my_options = {}
+        else:
+            # We will add a default prefix, so create a copy to avoid
+            # changing the user's options:
+            my_options = options.copy()
+
+        dep = DependencyTools()
+        nodes = self.get_node_list(nodes)
+        region_name = self.get_unique_region_name(nodes, my_options)
+        my_options["region_name"] = region_name
+        my_options["prefix"] = my_options.get("prefix", "extract")
+        input_list, output_list = dep.get_in_out_parameters(nodes)
+        # Determine a unique postfix to be used for output variables
+        # that avoid any name clashes
+        postfix = ExtractTrans.determine_postfix(input_list,
+                                                 output_list,
+                                                 postfix="_post")
+        my_options["post_var_postfix"] = postfix
+
+        if my_options.get("create_driver", False):
+            # We need to create the driver before inserting the ExtractNode
+            # (since some of the visitors used in driver creation do not
+            # handle an ExtractNode in the tree)
+            self._driver_creator.write_driver(nodes,
+                                              input_list, output_list,
+                                              postfix=postfix,
+                                              prefix=my_options["prefix"],
+                                              region_name=region_name)
+
+        result = super(LFRicExtractTrans, self).apply(nodes, my_options)
+        return result

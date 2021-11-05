@@ -45,7 +45,7 @@ missing (TODO: #647)
 
 from __future__ import print_function
 
-from psyclone.psyir.transformations import ExtractTrans
+from psyclone.domain.lfric.transformations import LFRicExtractTrans
 
 
 def trans(psy):
@@ -59,7 +59,7 @@ def trans(psy):
     :rtype: :py:class:`psyclone.gocean1p0.GOPSy`
 
     '''
-    extract = ExtractTrans()
+    extract = LFRicExtractTrans()
 
     # We don't support builtins yet, so the initialisation
     # cannot be instrumented, TODO #637

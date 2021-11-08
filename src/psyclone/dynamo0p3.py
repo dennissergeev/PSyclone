@@ -74,6 +74,7 @@ from psyclone.psyGen import (PSy, Invokes, Invoke, InvokeSchedule,
                              CodedKern)
 from psyclone.psyir.frontend.fortran import FortranReader
 from psyclone.psyir.nodes import (Loop, Literal, Schedule, Reference,
+                                  StructureReference,
                                   ACCEnterDataDirective,
                                   OMPParallelDoDirective)
 from psyclone.psyir.symbols import (
@@ -8840,7 +8841,7 @@ class DynKernelArgument(KernelArgument):
                 sym = symbol_table.new_symbol(
                     self.proxy_name, symbol_type=DataSymbol,
                     datatype=self.infer_datatype(proxy=True))
-            return Reference(sym)
+            return StructureReference.create(sym, ["data"])
 
         raise NotImplementedError(
             "Unsupported kernel argument type: '{0}' is of type '{1}' "

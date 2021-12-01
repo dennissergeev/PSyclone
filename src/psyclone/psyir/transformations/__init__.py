@@ -67,6 +67,7 @@ from psyclone.psyir.transformations.fold_conditional_return_expressions_trans \
     import FoldConditionalReturnExpressionsTrans
 from psyclone.psyir.transformations.transformation_error \
     import TransformationError
+from psyclone.psyir.transformation.omp_task_trans import OMPTaskTrans
 from psyclone.psyir.transformations.omp_taskwait_trans import OMPTaskwaitTrans
 # The entities in the __all__ list are made available to import directly from
 # this package e.g.:
@@ -89,4 +90,5 @@ __all__ = ['ChunkLoopTrans',
            'ArrayRange2LoopTrans',
            'FoldConditionalReturnExpressionsTrans',
            'HoistTrans',
-           'OMPTaskwaitTrans']
+           'OMPTaskwaitTrans',
+           'OMPTaskTrans']

@@ -83,7 +83,7 @@ from psyclone.psyir.nodes.omp_directives import OMPDirective, OMPDoDirective, \
     OMPParallelDirective, OMPParallelDoDirective, OMPSingleDirective, \
     OMPMasterDirective, OMPSerialDirective, OMPTaskloopDirective, \
     OMPTaskwaitDirective, OMPStandaloneDirective, OMPRegionDirective, \
-    OMPTargetDirective, OMPLoopDirective
+    OMPTargetDirective, OMPLoopDirective, OMPTaskDirective
 
 
 # The entities in the __all__ list are made available to import directly from
@@ -147,6 +147,7 @@ __all__ = [
         'OMPSingleDirective',
         'OMPMasterDirective',
         'OMPTaskloopDirective',
+        'OMPTaskDirective',
         'OMPDoDirective',
         'OMPParallelDoDirective',
         'OMPTaskwaitDirective',

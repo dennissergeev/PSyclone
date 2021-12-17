@@ -49,7 +49,8 @@ from psyclone import psyGen
 from psyclone.psyir.nodes import OMPDoDirective, OMPParallelDirective, \
     OMPParallelDoDirective, OMPMasterDirective, OMPTaskloopDirective, \
     OMPTaskwaitDirective, OMPTargetDirective, OMPLoopDirective, Schedule, \
-    Return, OMPSingleDirective, Loop, Literal, Routine, Assignment, Reference
+    Return, OMPSingleDirective, Loop, Literal, Routine, Assignment, \
+    Reference, OMPTaskDirective
 from psyclone.psyir.symbols import DataSymbol, INTEGER_TYPE
 from psyclone.errors import InternalError, GenerationError
 from psyclone.transformations import Dynamo0p3OMPLoopTrans, OMPParallelTrans, \
@@ -559,3 +560,38 @@ def test_omp_loop_directive_validate_global_constraints():
     loop2 = loop.copy()
     loop.loop_body.children[0].replace_with(loop2)
     omploop.validate_global_constraints()  # This is valid
+
+def test_omp_task_directive_validate_global_constraints(fortran_reader, fortran_writer):
+    ''' Test the validate_global_constraints method of the 
+    OMPTaskDirective'''
+    code = '''
+    subroutine my_subroutine()
+        integer, dimension(10, 10) :: A
+        integer :: i
+        integer :: j
+        do i = 1, 10
+            do j = 1, 10
+                A(i, j) = 0
+            end do
+        end do
+        do i = 1, 10
+            do j = 1, 10
+                A(i, j) = 0
+            end do
+        end do
+    end subroutine
+    '''
+    tree =  fortran_reader.psyir_from_source(code)
+    ptrans = OMPParallelTrans()
+    strans = OMPSingleTrans()
+    tdir = OMPTaskDirective()
+    loops = tree.walk(Loop, stop_type=Loop)
+    loop = loops[0]
+    parent = loop.parent
+    loop.detach()
+    tdir.children[0].addchild(loop)
+    parent.addchild(tdir, index=0)
+    strans.apply(parent.children)
+    ptrans.apply(parent.children)
+    print(fortran_writer(tree))
+    assert False

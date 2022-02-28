@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # BSD 3-Clause License
 #
-# Copyright (c) 2017-2021, Science and Technology Facilities Council.
+# Copyright (c) 2017-2022, Science and Technology Facilities Council.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -44,14 +44,14 @@ import inspect
 from importlib import import_module
 import pytest
 from psyclone.configuration import Config
-from psyclone.domain.gocean.transformations import GOceanLoopFuseTrans, \
-    GOceanExtractTrans
+from psyclone.domain.gocean.transformations import GOceanLoopFuseTrans
 from psyclone.errors import GenerationError
-from psyclone.gocean1p0 import GOLoop
+from psyclone.gocean1p0 import GOKern
+from psyclone.psyGen import Kern
 from psyclone.psyir.nodes import Loop, Routine
 from psyclone.psyir.transformations import LoopFuseTrans, LoopTrans, \
     TransformationError
-from psyclone.transformations import ACCKernelsTrans, GOLoopSwapTrans, \
+from psyclone.transformations import ACCKernelsTrans, ACCRoutineTrans, \
     OMPParallelTrans, MoveTrans, GOceanOMPParallelLoopTrans, \
     GOceanOMPLoopTrans, KernelModuleInlineTrans, OMPLoopTrans, \
     ACCParallelTrans, ACCEnterDataTrans, ACCDataTrans, ACCLoopTrans
@@ -105,6 +105,20 @@ def test_loop_fuse_error():
     # Also check that we catch this for the second argument:
     with pytest.raises(TransformationError) as err:
         lftrans.apply(schedule.children[0], schedule.children[1].children[0])
+    assert "Both nodes must be of the same GOLoop class." in str(err.value)
+
+    # Also check if they have different field_spaces
+    schedule.children[1].field_space = "go_cv"
+    with pytest.raises(TransformationError) as err:
+        lftrans.apply(schedule.children[0], schedule.children[1])
+    assert ("Cannot fuse loops that are over different grid-point types: "
+            "go_cu and go_cv" in str(err.value))
+
+    # Also check when one of them is a Loop but not of the GOcean API
+    loop = schedule.children[1]
+    loop.replace_with(Loop())
+    with pytest.raises(TransformationError) as err:
+        lftrans.apply(schedule.children[0], schedule.children[1])
     assert "Both nodes must be of the same GOLoop class." in str(err.value)
 
 
@@ -1143,163 +1157,6 @@ def test_module_inline_warning_no_change():
     inline_trans.apply(kern_call, {"inline": False})
 
 
-def test_loop_swap_correct(tmpdir):
-    ''' Testing correct loop swapping transform. Esp. try first, middle, and
-    last invokes to make sure the inserting of the inner loop happens at
-    the right place.'''
-
-    psy, _ = get_invoke("test27_loop_swap.f90", API, idx=0, dist_mem=False)
-    invoke = psy.invokes.get("invoke_loop1")
-    schedule = invoke.schedule
-    schedule_str = str(schedule)
-
-    # First make sure to throw an early error if the source file
-    # test27_loop_swap.f90 should have been changed
-    expected = (
-        r"Loop\[id:'', variable:'j'.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"kern call: bc_ssh_code.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"kern call: bc_solid_u_code .*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"kern call: bc_solid_v_code")
-
-    assert re.search(expected, schedule_str.replace("\n", " "))
-
-    # Now swap the first loops
-    swap = GOLoopSwapTrans()
-    swap.apply(schedule.children[0])
-    schedule_str = str(schedule)
-
-    expected = (
-        r"Loop\[id:'', variable:'i'.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"kern call: bc_ssh_code.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"kern call: bc_solid_u_code .*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"kern call: bc_solid_v_code")
-
-    assert re.search(expected, schedule_str.replace("\n", " "))
-
-    # Now swap the middle loops
-    swap.apply(schedule.children[1])
-    schedule_str = str(schedule)
-
-    expected = (
-        r"Loop\[id:'', variable:'i'.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"kern call: bc_ssh_code.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"kern call: bc_solid_u_code .*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"kern call: bc_solid_v_code")
-
-    assert re.search(expected, schedule_str.replace("\n", " "))
-
-    # Now swap the last loops
-    swap.apply(schedule.children[2])
-    schedule_str = str(schedule)
-
-    expected = (
-        r"Loop\[id:'', variable:'i'.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"kern call: bc_ssh_code.*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"kern call: bc_solid_u_code .*?"
-        r"Loop\[id:'', variable:'i'.*?"
-        r"Loop\[id:'', variable:'j'.*?"
-        r"kern call: bc_solid_v_code")
-
-    assert re.search(expected, schedule_str.replace("\n", " "))
-
-    assert GOcean1p0Build(tmpdir).code_compiles(psy)
-
-
-def test_go_loop_swap_errors():
-    ''' Test loop swapping transform with incorrect parameters. '''
-
-    psy, invoke_loop1 = get_invoke("test27_loop_swap.f90", API, idx=1,
-                                   dist_mem=False)
-
-    schedule = invoke_loop1.schedule
-    swap = GOLoopSwapTrans()
-    assert str(swap) == "Exchange the order of two nested loops: inner "\
-        "becomes outer and vice versa"
-
-    # Test error if given node is not the outer loop of at least
-    # a double nested loop:
-    with pytest.raises(TransformationError) as error:
-        swap.apply(schedule.children[0].loop_body[0])
-    assert re.search("Transformation Error: Target of GOLoopSwapTrans "
-                     "transformation must be a sub-class of Loop but got "
-                     "'GOKern'.", str(error.value), re.S) is not None
-
-    # Not a loop: use the call to bc_ssh_code node as example for this test:
-    with pytest.raises(TransformationError) as error:
-        swap.apply(schedule.children[0].loop_body[0].loop_body[0])
-    assert ("Target of GOLoopSwapTrans transformation must be a sub-class of "
-            "Loop but got 'GOKern'" in str(error.value))
-
-    # Now create an outer loop with more than one inner statement
-    # ... by fusing the first and second outer loops :(
-    invoke_loop2 = psy.invokes.get("invoke_loop2")
-    schedule = invoke_loop2.schedule
-
-    fuse = GOceanLoopFuseTrans()
-    fuse.apply(schedule.children[0], schedule.children[1])
-
-    with pytest.raises(TransformationError) as error:
-        swap.apply(schedule.children[0])
-    assert re.search("Supplied node .* must be the outer loop of a loop nest "
-                     "and must have exactly one inner loop, but this node "
-                     "has 2 inner statements, the first two being .* and .*",
-                     str(error.value), re.S) is not None
-
-    # Now remove the body of the first inner loop, and pass the first
-    # inner loop --> i.e. a loop with an empty body
-    del schedule.children[0].loop_body[0].children[3].children[0]
-
-    with pytest.raises(TransformationError) as error:
-        swap.apply(schedule.children[0].loop_body[0])
-    assert re.search("Supplied node .* must be the outer loop of a loop nest "
-                     "and must have one inner loop, but this node does not "
-                     "have any statements inside.",
-                     str(error.value), re.S) is not None
-
-
-def test_go_loop_swap_wrong_loop_type():
-    '''
-    Test loop swapping transform when supplied loops are not GOLoops.
-    '''
-    swap = GOLoopSwapTrans()
-    _, invoke = get_invoke("1.0.1_single_named_invoke.f90",
-                           "dynamo0.3", idx=0, dist_mem=True)
-    with pytest.raises(TransformationError) as error:
-        swap.apply(invoke.schedule.children[4])
-
-    assert re.search("Given node .* is not a GOLoop, but an instance of "
-                     ".*DynLoop", str(error.value), re.S) is not None
-
-    _, invoke_loop1 = get_invoke("test27_loop_swap.f90", API, idx=1,
-                                 dist_mem=False)
-    schedule = invoke_loop1.schedule
-    loop = schedule[0].loop_body[0]
-    assert isinstance(loop, GOLoop)
-    # Change the class of the inner loop so that it is not a GOLoop
-    loop.__class__ = Loop
-    with pytest.raises(TransformationError) as error:
-        swap.apply(schedule[0])
-    assert "is not a GOLoop, but an instance of 'Loop'" in str(error.value)
-
-
 def test_acc_parallel_not_a_loop():
     ''' Test that we raise an appropriate error if we attempt
     to apply the OpenACC Parallel transformation to something that
@@ -1472,7 +1329,7 @@ def test_acc_data_grid_copyin(tmpdir):
     assert pcopy in code
     # Check that we flag that the fields are now on the device
     for obj in ["u_fld", "cu_fld", "du_fld", "d_fld"]:
-        assert "{0}%data_on_device = .true.".format(obj) in code
+        assert f"{obj}%data_on_device = .true." in code
     # Check that we have no acc_update_device calls
     assert "CALL acc_update_device" not in code
     assert GOcean1p0Build(tmpdir).code_compiles(psy)
@@ -1674,9 +1531,8 @@ def test_acc_enter_directive_infrastructure_setup():
     # Check that each field data_on_device and read_from_device_f have been
     # initialised
     for field in ["cv_fld", "p_fld", "v_fld"]:
-        assert "{0}%data_on_device = .true.\n".format(field) in gen
-        assert ("{0}%read_from_device_f => read_from_device\n".format(field)
-                in gen)
+        assert f"{field}%data_on_device = .true.\n" in gen
+        assert f"{field}%read_from_device_f => read_from_device\n" in gen
 
 
 def test_acc_enter_directive_infrastructure_setup_error():
@@ -1843,6 +1699,79 @@ def test_acc_kernels_error():
             " and dynamo0.3 front-ends" in str(err.value))
 
 
+def test_accroutinetrans_module_use():
+    ''' Check that ACCRoutineTrans rejects a kernel if it contains a module
+    use statement. '''
+    _, invoke = get_invoke("single_invoke_kern_with_use.f90", api="gocean1.0",
+                           idx=0)
+    sched = invoke.schedule
+    kernels = sched.walk(Kern)
+    rtrans = ACCRoutineTrans()
+    with pytest.raises(TransformationError) as err:
+        rtrans.apply(kernels[0])
+    assert ("imported interface: ['rdt']. If these symbols represent data then"
+            " they must first" in str(err.value))
+
+
+def test_accroutinetrans_with_kern(fortran_writer, monkeypatch):
+    ''' Test that we can transform a kernel by adding a "!$acc routine"
+    directive to it. '''
+    _, invoke = get_invoke("nemolite2d_alg_mod.f90", api="gocean1.0", idx=0)
+    sched = invoke.schedule
+    kern = sched.coded_kernels()[0]
+    assert isinstance(kern, GOKern)
+    rtrans = ACCRoutineTrans()
+    assert rtrans.name == "ACCRoutineTrans"
+    rtrans.apply(kern)
+    # Check that there is a acc routine directive in the kernel
+    code = fortran_writer(kern.get_kernel_schedule())
+    assert "!$acc routine\n" in code
+
+    # If the kernel schedule is not accessible, the transformation fails
+    def raise_gen_error():
+        '''Simple function that raises GenerationError.'''
+        raise GenerationError("error")
+    monkeypatch.setattr(kern, "get_kernel_schedule", raise_gen_error)
+    with pytest.raises(TransformationError) as err:
+        rtrans.apply(kern)
+    assert ("Failed to create PSyIR for kernel 'continuity_code'. Cannot "
+            "transform such a kernel." in str(err.value))
+
+
+def test_accroutinetrans_with_routine(fortran_writer):
+    ''' Test that we can transform a routine by adding a "!$acc routine"
+    directive to it. '''
+    _, invoke = get_invoke("nemolite2d_alg_mod.f90", api="gocean1.0", idx=0)
+    sched = invoke.schedule
+    kern = sched.coded_kernels()[0]
+    assert isinstance(kern, GOKern)
+    rtrans = ACCRoutineTrans()
+    assert rtrans.name == "ACCRoutineTrans"
+    routine = kern.get_kernel_schedule()
+    rtrans.apply(routine)
+    # Check that there is a acc routine directive in the routine
+    code = fortran_writer(routine)
+    assert "!$acc routine\n" in code
+
+    # Even if applied multiple times the Directive is only there once
+    previous_num_children = len(routine.children)
+    rtrans.apply(routine)
+    assert previous_num_children == len(routine.children)
+
+
+def test_accroutinetrans_with_invalid_node():
+    ''' Test that ACCRoutineTrans raises the appropriate error when a node
+    that is not a Routine or a Kern is provided.'''
+    _, invoke = get_invoke("nemolite2d_alg_mod.f90", api="gocean1.0", idx=0)
+    sched = invoke.schedule
+    kern = sched[0]
+    rtrans = ACCRoutineTrans()
+    with pytest.raises(TransformationError) as err:
+        rtrans.apply(kern)
+    assert ("The ACCRoutineTrans must be applied to a sub-class of Kern or "
+            "Routine but got 'GOLoop'." in str(err.value))
+
+
 def test_all_go_loop_trans_base_validate(monkeypatch):
     ''' Check that all GOcean transformations that sub-class LoopTrans call the
     base validate() method. '''
@@ -1871,5 +1800,4 @@ def test_all_go_loop_trans_base_validate(monkeypatch):
                 else:
                     trans.validate(loop)
             assert "validate test exception" in str(err.value), \
-                "{0}.validate() does not call LoopTrans.validate()".format(
-                    name)
+                f"{name}.validate() does not call LoopTrans.validate()"

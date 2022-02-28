@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # BSD 3-Clause License
 #
-# Copyright (c) 2017-2021, Science and Technology Facilities Council.
+# Copyright (c) 2017-2022, Science and Technology Facilities Council.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -44,30 +44,23 @@
 from __future__ import absolute_import, print_function
 
 import abc
-import six
-
-from fparser.two.utils import walk
-from fparser.common.readfortran import FortranStringReader
-from fparser.two.Fortran2003 import Subroutine_Subprogram, \
-    Subroutine_Stmt, Specification_Part, Type_Declaration_Stmt, \
-    Implicit_Part, Comment
 
 from psyclone import psyGen
 from psyclone.configuration import Config
 from psyclone.domain.lfric import LFRicConstants
 from psyclone.dynamo0p3 import DynInvokeSchedule
-from psyclone.errors import InternalError
-from psyclone.gocean1p0 import GOLoop
+from psyclone.errors import InternalError, GenerationError
 from psyclone.nemo import NemoInvokeSchedule
-from psyclone.psyGen import Transformation, Kern, InvokeSchedule
+from psyclone.psyGen import Transformation, Kern, InvokeSchedule, BuiltIn
 from psyclone.psyir import nodes
-from psyclone.psyir.nodes import CodeBlock, Loop, Assignment, Schedule, \
+from psyclone.psyir.nodes import Loop, Assignment, \
     Directive, ACCLoopDirective, OMPDoDirective, OMPParallelDoDirective, \
     ACCDataDirective, ACCEnterDataDirective, OMPDirective, \
     ACCKernelsDirective, Routine, OMPTaskloopDirective, OMPLoopDirective, \
-    OMPTargetDirective
+    OMPTargetDirective, OMPDeclareTargetDirective, ACCRoutineDirective
 from psyclone.psyir.symbols import SymbolError, ScalarType, DeferredType, \
     INTEGER_TYPE, DataSymbol, Symbol
+from psyclone.psyir.tools import DependencyTools
 from psyclone.psyir.transformations import RegionTrans, LoopTrans, \
     TransformationError
 
@@ -128,12 +121,11 @@ class KernelTrans(Transformation):
                                      because there are symbols of unknown type.
 
         '''
-        from psyclone.errors import GenerationError
 
         if not isinstance(kern, Kern):
             raise TransformationError(
-                "Target of a kernel transformation must be a sub-class of "
-                "psyGen.Kern but got '{0}'".format(type(kern).__name__))
+                f"Target of a kernel transformation must be a sub-class of "
+                f"psyGen.Kern but got '{type(kern).__name__}'")
 
         # Check that the PSyIR and associated Symbol table of the Kernel is OK.
         # If this kernel contains symbols that are not captured in the PSyIR
@@ -141,15 +133,14 @@ class KernelTrans(Transformation):
         try:
             kernel_schedule = kern.get_kernel_schedule()
         except GenerationError as error:
-            message = ("Failed to create PSyIR version of kernel code for "
-                       "kernel '{0}'. Error reported is {1}."
-                       "".format(kern.name, str(error.value)))
-            six.raise_from(TransformationError(message), error)
+            raise TransformationError(
+                f"Failed to create PSyIR for kernel '{kern.name}'. "
+                f"Cannot transform such a kernel.") from error
         except SymbolError as err:
-            six.raise_from(TransformationError(
-                "Kernel '{0}' contains accesses to data that are not captured "
-                "in the PSyIR Symbol Table(s) ({1}). Cannot transform such a "
-                "kernel.".format(kern.name, str(err.args[0]))), err)
+            raise TransformationError(
+                f"Kernel '{kern.name}' contains accesses to data that are not "
+                f"present in the Symbol Table(s). Cannot "
+                f"transform such a kernel.") from err
         # Check that all kernel symbols are declared in the kernel
         # symbol table(s). At this point they may be declared in a
         # container containing this kernel which is not supported.
@@ -158,18 +149,19 @@ class KernelTrans(Transformation):
                 var.scope.symbol_table.lookup(
                     var.name, scope_limit=var.ancestor(nodes.KernelSchedule))
             except KeyError as err:
-                six.raise_from(TransformationError(
-                    "Kernel '{0}' contains accesses to data (variable '{1}') "
-                    "that are not captured in the PSyIR Symbol Table(s) "
-                    "within KernelSchedule scope. Cannot transform such a "
-                    "kernel.".format(kern.name, var.name)), err)
+                raise TransformationError(
+                    f"Kernel '{kern.name}' contains accesses to data (variable"
+                    f" '{var.name}') that are not present in the Symbol Table"
+                    f"(s) within KernelSchedule scope. Cannot transform such a"
+                    f" kernel.") from err
 
 
-@six.add_metaclass(abc.ABCMeta)
-class ParallelLoopTrans(LoopTrans):
+class ParallelLoopTrans(LoopTrans, metaclass=abc.ABCMeta):
     '''
-    Adds an orphaned directive to a loop indicating that it should be
-    parallelised.
+    Adds an abstract directive (it needs to be specified by sub-classing this
+    transformation) to a loop indicating that it should be parallelised. It
+    performs some data dependency checks to guarantee that the loop can be
+    parallelised without changing the semantics of it.
 
     '''
     # The types of node that must be excluded from the section of PSyIR
@@ -213,6 +205,8 @@ class ParallelLoopTrans(LoopTrans):
                 colours.
         :raises TransformationError: if 'collapse' is supplied with an \
                 invalid number of loops.
+        :raises TransformationError: if there is a data dependency that \
+                prevents the parallelisation of the loop.
 
         '''
         # Check that the supplied node is a Loop and does not contain any
@@ -253,6 +247,28 @@ class ParallelLoopTrans(LoopTrans):
                     "Cannot apply COLLAPSE({0}) clause to a loop nest "
                     "containing only {1} loops".format(collapse, loop_count))
 
+        # Check that there are no loop-carried dependencies
+        dep_tools = DependencyTools()
+
+        try:
+            if not dep_tools.can_loop_be_parallelised(node,
+                                                      only_nested_loops=False):
+
+                # The DependencyTools also returns False for things that are
+                # not an issue, so we ignore specific messages.
+                for message in dep_tools.get_all_messages():
+                    if "is only written once." in message:
+                        continue
+                    messages = "\n".join(dep_tools.get_all_messages())
+                    raise TransformationError(
+                        f"Dependency analysis failed with the following "
+                        f"messages:\n{messages}")
+        except (KeyError, InternalError):
+            # LFRic still has symbols that don't exist in the symbol_table
+            # until the gen_code() step, so the dependency analysis raises
+            # KeyErrors in some cases. We ignore this for now.
+            pass
+
     def apply(self, node, options=None):
         '''
         Apply the Loop transformation to the specified node in a
@@ -283,8 +299,6 @@ class ParallelLoopTrans(LoopTrans):
         if not options:
             options = {}
         self.validate(node, options=options)
-
-        schedule = node.root
 
         collapse = options.get("collapse", None)
 
@@ -619,7 +633,110 @@ class OMPTargetTrans(RegionTrans):
 
         parent.children.insert(start_index, directive)
 
-        return None, None
+
+class OMPDeclareTargetTrans(Transformation):
+    '''
+    Adds an OpenMP declare target directive to the specified routine.
+
+    For example:
+
+    >>> from psyclone.psyir.frontend.fortran import FortranReader
+    >>> from psyclone.psyir.nodes import Loop
+    >>> from psyclone.transformations import OMPDeclareTargetTrans
+    >>>
+    >>> tree = FortranReader().psyir_from_source("""
+    ...     subroutine my_subroutine(A)
+    ...         integer, dimension(10, 10), intent(inout) :: A
+    ...         integer :: i
+    ...         integer :: j
+    ...         do i = 1, 10
+    ...             do j = 1, 10
+    ...                 A(i, j) = 0
+    ...             end do
+    ...         end do
+    ...     end subroutine
+    ...     """
+    >>> omptargettrans = OMPDeclareTargetTrans()
+    >>> omptargettrans.apply(tree.walk(Routine)[0])
+
+    will generate:
+
+    .. code-block:: fortran
+
+        subroutine my_subroutine(A)
+            integer, dimension(10, 10), intent(inout) :: A
+            integer :: i
+            integer :: j
+            !$omp declare target
+            do i = 1, 10
+                do j = 1, 10
+                    A(i, j) = 0
+                end do
+            end do
+        end subroutine
+
+    '''
+    def apply(self, node, options=None):
+        ''' Insert an OMPDeclareTargetDirective inside the provided routine.
+
+        :param node: the PSyIR routine to insert the directive into.
+        :type node: :py:class:`psyclone.psyir.nodes.Routine`
+        :param options: a dictionary with options for transformations.
+        :type options: dict of str:values or None
+
+        '''
+        self.validate(node, options)
+        for child in node.children:
+            if isinstance(child, OMPDeclareTargetDirective):
+                return  # The routine is already marked with OMPDeclareTarget
+        node.children.insert(0, OMPDeclareTargetDirective())
+
+    def validate(self, node, options=None):
+        ''' Check that an OMPDeclareTargetDirective can be inserted.
+
+        :param node: the PSyIR node to validate.
+        :type node: :py:class:`psyclone.psyir.nodes.Routine`
+        :param options: a dictionary with options for transformations.
+        :type options: dict of str:values or None
+
+        :raises TransformationError: if the node is not a Routine
+
+        '''
+        super().validate(node, options=options)
+        # Check that the supplied Node is a Routine
+        if not isinstance(node, Routine):
+            raise TransformationError(
+                f"The OMPDeclareTargetTrans must be applied to a Routine, "
+                f"but found: '{type(node).__name__}'.")
+
+        # Check that the kernel does not access any data or routines via a
+        # module 'use' statement or that are not captured by the SymbolTable
+        for candidate in node.walk((nodes.Reference, nodes.CodeBlock)):
+            if isinstance(candidate, nodes.CodeBlock):
+                names = candidate.get_symbol_names()
+            else:
+                names = [candidate.name]
+            for name in names:
+                try:
+                    candidate.scope.symbol_table.lookup(name, scope_limit=node)
+                except KeyError as err:
+                    raise TransformationError(
+                        f"Kernel '{node.name}' contains accesses to data "
+                        f"(variable '{name}') that are not present in the "
+                        f"Symbol Table(s) within the scope of this routine. "
+                        f"Cannot transform such a kernel.") from err
+
+        imported_variables = node.symbol_table.imported_symbols
+        if imported_variables:
+            raise TransformationError(
+                f"The Symbol Table for kernel '{node.name}' contains the "
+                f"following symbol(s) with imported interface: "
+                f"{[sym.name for sym in imported_variables]}. If these "
+                f"symbols represent data then they must first be converted"
+                f" to kernel arguments using the KernelImportsToArguments "
+                f"transformation. If the symbols represent external "
+                f"routines then PSyclone cannot currently transform this "
+                f"kernel for execution on an OpenMP target.")
 
 
 class OMPLoopTrans(ParallelLoopTrans):
@@ -756,7 +873,7 @@ class OMPLoopTrans(ParallelLoopTrans):
             schedule format.
         '''
 
-        if not isinstance(value, six.string_types):
+        if not isinstance(value, str):
             raise TypeError(
                 "The OMPLoopTrans.omp_schedule property must be a 'str'"
                 " but found a '{0}'.".format(type(value).__name__))
@@ -774,9 +891,8 @@ class OMPLoopTrans(ParallelLoopTrans):
             try:
                 int(value_parts[1].strip())
             except ValueError as err:
-                six.raise_from(
-                    ValueError("Supplied OpenMP schedule '{0}' has an "
-                               "invalid chunk-size.".format(value)), err)
+                raise ValueError("Supplied OpenMP schedule '{0}' has an "
+                                 "invalid chunk-size.".format(value)) from err
 
         self._omp_schedule = value
 
@@ -984,7 +1100,7 @@ class OMPParallelLoopTrans(OMPLoopTrans):
         >>> from psyclone.parse.algorithm import parse
         >>> from psyclone.psyGen import PSyFactory
         >>> ast, invokeInfo = parse("dynamo.F90")
-        >>> psy = PSyFactory("dynamo0.1").create(invokeInfo)
+        >>> psy = PSyFactory("dynamo0.3").create(invokeInfo)
         >>> schedule = psy.invokes.get('invoke_v3_kernel_type').schedule
         >>> # Uncomment the following line to see a text view of the schedule
         >>> # schedule.view()
@@ -1039,8 +1155,6 @@ class OMPParallelLoopTrans(OMPLoopTrans):
         :type options: dictionary of string:values or None
         '''
         self.validate(node, options=options)
-
-        schedule = node.root
 
         # keep a reference to the node's original parent and its index as these
         # are required and will change when we change the node's location
@@ -1259,8 +1373,6 @@ class ColourTrans(LoopTrans):
         '''
         self.validate(node, options=options)
 
-        schedule = node.root
-
         node_parent = node.parent
         node_position = node.position
 
@@ -1351,8 +1463,6 @@ class KernelModuleInlineTrans(KernelTrans):
 
         '''
         self.validate(node, options)
-
-        schedule = node.root
 
         if not options:
             options = {}
@@ -1462,8 +1572,7 @@ class Dynamo0p3ColourTrans(ColourTrans):
         ColourTrans.apply(self, node)
 
 
-@six.add_metaclass(abc.ABCMeta)
-class ParallelRegionTrans(RegionTrans):
+class ParallelRegionTrans(RegionTrans, metaclass=abc.ABCMeta):
     '''
     Base class for transformations that create a parallel region.
 
@@ -1547,7 +1656,6 @@ class ParallelRegionTrans(RegionTrans):
         # position of the new !$omp parallel directive.
         node_parent = node_list[0].parent
         node_position = node_list[0].position
-        schedule = node_list[0].root
 
         # Create the parallel directive as a child of the
         # parent of the nodes being enclosed and with those nodes
@@ -2190,8 +2298,6 @@ class Dynamo0p3RedundantComputationTrans(LoopTrans):
             options = {}
         depth = options.get("depth")
 
-        schedule = loop.root
-
         if loop.loop_type == "":
             # Loop is over cells
             loop.set_upper_bound("cell_halo", depth)
@@ -2207,132 +2313,6 @@ class Dynamo0p3RedundantComputationTrans(LoopTrans):
         # Add/remove halo exchanges as required due to the redundant
         # computation
         loop.update_halo_exchanges()
-
-
-class GOLoopSwapTrans(LoopTrans):
-    ''' Provides a loop-swap transformation, e.g.:
-
-    .. code-block:: fortran
-
-        DO j=1, m
-            DO i=1, n
-
-    becomes:
-
-    .. code-block:: fortran
-
-        DO i=1, n
-            DO j=1, m
-
-    This transform is used as follows:
-
-     >>> from psyclone.parse.algorithm import parse
-     >>> from psyclone.psyGen import PSyFactory
-     >>> ast, invokeInfo = parse("shallow_alg.f90")
-     >>> psy = PSyFactory("gocean1.0").create(invokeInfo)
-     >>> schedule = psy.invokes.get('invoke_0').schedule
-     >>> # Uncomment the following line to see a text view of the schedule
-     >>> # schedule.view()
-     >>>
-     >>> from psyclone.transformations import GOLoopSwapTrans
-     >>> swap = GOLoopSwapTrans()
-     >>> swap.apply(schedule.children[0])
-     >>> # Uncomment the following line to see a text view of the schedule
-     >>> # schedule.view()
-
-    '''
-    def __str__(self):
-        return "Exchange the order of two nested loops: inner becomes " + \
-               "outer and vice versa"
-
-    def validate(self, node_outer, options=None):
-        '''Checks if the given node contains a valid Fortran structure
-        to allow swapping loops. This means the node must represent
-        a loop, and it must have exactly one child that is also a loop.
-
-        :param node_outer: a Loop node from an AST.
-        :type node_outer: py:class:`psyclone.psyir.nodes.Loop`
-        :param options: a dictionary with options for transformations.
-        :type options: dict of string:values or None
-
-        :raises TransformationError: if the supplied node does not\
-                                     allow a loop swap to be done.
-
-        '''
-        super(GOLoopSwapTrans, self).validate(node_outer, options=options)
-
-        if not isinstance(node_outer, GOLoop):
-            raise TransformationError("Error in GOLoopSwap transformation. "
-                                      "Given node '{0}' is not a GOLoop, but "
-                                      "an instance of '{1}."
-                                      .format(node_outer, type(node_outer)))
-
-        if not node_outer.loop_body or not node_outer.loop_body.children:
-            raise TransformationError("Error in GOLoopSwap transformation. "
-                                      "Supplied node '{0}' must be the outer "
-                                      "loop of a loop nest and must have one "
-                                      "inner loop, but this node does not "
-                                      "have any statements inside."
-                                      .format(node_outer))
-
-        node_inner = node_outer.loop_body[0]
-
-        # Check that the body of the outer loop is itself a Loop
-        try:
-            super(GOLoopSwapTrans, self).validate(node_inner, options=options)
-        except TransformationError as err:
-            six.raise_from(
-                TransformationError("Error in GOLoopSwap transformation. "
-                                    "Supplied node '{0}' must be the outer "
-                                    "loop of a loop nest but the first "
-                                    "inner statement is not a valid loop:\n"
-                                    "{1}.".format(node_outer, str(err.value))),
-                err)
-
-        if not isinstance(node_inner, GOLoop):
-            raise TransformationError(
-                "Error in GOLoopSwap transformation. Inner loop of supplied "
-                "loop nest ({0}) is not a GOLoop, but an instance of '{1}'."
-                .format(node_outer, type(node_inner).__name__))
-
-        if len(node_outer.loop_body.children) > 1:
-            raise TransformationError(
-                "Error in GOLoopSwap transformation. Supplied node '{0}' must"
-                " be the outer loop of a loop nest and must have exactly one "
-                "inner loop, but this node has {1} inner statements, the "
-                "first two being '{2}' and '{3}'"
-                "".format(node_outer, len(node_outer.loop_body.children),
-                          node_outer.loop_body[0], node_outer.loop_body[1]))
-
-    def apply(self, outer, options=None):
-        # pylint: disable=arguments-differ
-        '''The argument :py:obj:`outer` must be a loop which has exactly
-        one inner loop. This transform then swaps the outer and inner loop.
-
-        :param outer: the node representing the outer loop.
-        :type outer: :py:class:`psyclone.psyir.nodes.Loop`
-        :param options: a dictionary with options for transformations.
-        :type options: dictionary of string:values or None
-
-        :raises TransformationError: if the supplied node does not \
-                                     allow a loop swap to be done.
-
-        '''
-        self.validate(outer, options=options)
-
-        schedule = outer.root
-        inner = outer.loop_body[0]
-
-        # Detach the inner code
-        inner_loop_body = inner.loop_body.detach()
-
-        # Swap the loops
-        outer.replace_with(inner.detach())
-        inner.addchild(Schedule())
-        inner.loop_body.addchild(outer)
-
-        # Insert again the inner code in the new inner loop
-        outer.loop_body.replace_with(inner_loop_body)
 
 
 class Dynamo0p3AsyncHaloExchangeTrans(Transformation):
@@ -2379,8 +2359,6 @@ class Dynamo0p3AsyncHaloExchangeTrans(Transformation):
 
         '''
         self.validate(node, options)
-
-        schedule = node.root
 
         from psyclone.dynamo0p3 import DynHaloExchangeStart, DynHaloExchangeEnd
         # add asynchronous start and end halo exchanges and initialise
@@ -2484,6 +2462,7 @@ class Dynamo0p3KernelConstTrans(Transformation):
         return "Dynamo0p3KernelConstTrans"
 
     def apply(self, node, options=None):
+        # pylint: disable=too-many-statements
         '''Transforms a kernel so that the values for the number of degrees of
         freedom (if a valid value for the element_order arg is
         provided), the number of quadrature points (if the quadrature
@@ -2547,11 +2526,12 @@ class Dynamo0p3KernelConstTrans(Transformation):
             arg_index = arg_position - 1
             try:
                 symbol = symbol_table.argument_list[arg_index]
-            except IndexError:
+            except IndexError as err:
                 raise TransformationError(
                     "The argument index '{0}' is greater than the number of "
-                    "arguments '{1}'.".format(arg_index,
-                                              len(symbol_table.argument_list)))
+                    "arguments '{1}'."
+                    .format(arg_index,
+                            len(symbol_table.argument_list))) from err
             # Perform some basic checks on the argument to make sure
             # it is the expected type
             if not isinstance(symbol.datatype, ScalarType):
@@ -2595,7 +2575,6 @@ class Dynamo0p3KernelConstTrans(Transformation):
         number_of_layers = options.get("number_of_layers", None)
         quadrature = options.get("quadrature", False)
         element_order = options.get("element_order", None)
-        schedule = node.root
         kernel = node
 
         from psyclone.domain.lfric import KernCallArgList
@@ -2606,7 +2585,7 @@ class Dynamo0p3KernelConstTrans(Transformation):
         except NotImplementedError as excinfo:
             raise TransformationError(
                 "Failed to parse kernel '{0}'. Error reported was '{1}'."
-                "".format(kernel.name, str(excinfo)))
+                "".format(kernel.name, str(excinfo))) from excinfo
 
         symbol_table = kernel_schedule.symbol_table
         if number_of_layers:
@@ -2646,14 +2625,14 @@ class Dynamo0p3KernelConstTrans(Transformation):
                         ndofs = Dynamo0p3KernelConstTrans. \
                                 space_to_dofs[
                                     info.function_space](element_order)
-                    except KeyError:
+                    except KeyError as err:
                         raise InternalError(
                             "Error in Dynamo0p3KernelConstTrans "
                             "transformation. Unsupported function space "
                             "'{0}' found. Expecting one of {1}."
                             "".format(info.function_space,
                                       Dynamo0p3KernelConstTrans.
-                                      space_to_dofs.keys()))
+                                      space_to_dofs.keys())) from err
                     make_constant(symbol_table, info.position, ndofs,
                                   function_space=info.function_space)
 
@@ -2852,9 +2831,9 @@ class ACCEnterDataTrans(Transformation):
                                       "region - cannot add an enter data.")
 
 
-class ACCRoutineTrans(KernelTrans):
+class ACCRoutineTrans(Transformation):
     '''
-    Transform a kernel subroutine by adding a "!$acc routine" directive
+    Transform a kernel or routine by adding a "!$acc routine" directive
     (causing it to be compiled for the OpenACC accelerator device).
     For example:
 
@@ -2882,101 +2861,93 @@ class ACCRoutineTrans(KernelTrans):
         '''
         return "ACCRoutineTrans"
 
-    def apply(self, kern, options=None):
+    def apply(self, node, options=None):
         '''
-        Modifies the AST of the supplied kernel so that it contains an
-        '!$acc routine' OpenACC directive.
-        This transformation affects the f2pygen and the PSyIR trees of
-        this kernel.
+        Add the '!$acc routine' OpenACC directive into the code of the
+        supplied Kernel (in a PSyKAl API such as GOcean or LFRic) or directly
+        in the supplied Routine.
 
-        :param kern: the kernel object to transform.
-        :type kern: :py:class:`psyclone.psyGen.Kern`
+        :param node: the kernel call or routine implementation to transform.
+        :type node: :py:class:`psyclone.psyGen.Kern` or \
+                    :py:class:`psyclone.psyir.nodes.Routine`
         :param options: a dictionary with options for transformations.
         :type options: dictionary of string:values or None
 
-        :raises TransformationError: if we fail to find the subroutine \
-                                     corresponding to the kernel object.
-
         '''
-        # pylint: disable=too-many-locals
-
         # Check that we can safely apply this transformation
-        self.validate(kern, options)
+        self.validate(node, options)
 
-        # Get the fparser2 AST of the kernel
-        ast = kern.ast
-        # Find the kernel subroutine in the fparser2 parse tree
-        kern_sub = None
-        subroutines = walk(ast.content, Subroutine_Subprogram)
-        for sub in subroutines:
-            for child in sub.content:
-                if isinstance(child, Subroutine_Stmt) and \
-                   str(child.items[1]) == kern.name:
-                    kern_sub = sub
-                    break
-            if kern_sub:
-                break
-        # Find the last declaration statement in the subroutine
-        spec = walk(kern_sub.content, Specification_Part)[0]
-        posn = -1
-        for idx, node in enumerate(spec.content):
-            if not isinstance(node, (Implicit_Part, Type_Declaration_Stmt)):
-                posn = idx
-                break
-        # Create the directive and insert it
-        cmt = Comment(FortranStringReader("!$acc routine",
-                                          ignore_comments=False))
-        if posn == -1:
-            spec.content.append(cmt)
+        if isinstance(node, Kern):
+            # Flag that the kernel has been modified
+            node.modified = True
+
+            # Get the schedule representing the kernel subroutine
+            routine = node.get_kernel_schedule()
         else:
-            spec.content.insert(posn, cmt)
+            routine = node
 
-        # Flag that the kernel has been modified
-        kern.modified = True
+        # Insert the directive to the routine if it doesn't already exist
+        for child in routine.children:
+            if isinstance(child, ACCRoutineDirective):
+                return  # The routine is already marked with ACCRoutine
+        routine.children.insert(0, ACCRoutineDirective())
 
-        # Add the 'cmt' directive into the PSyIR as a CodeBlock
-        kernel_schedule = kern.get_kernel_schedule()
-        kernel_schedule.addchild(
-            CodeBlock([cmt], CodeBlock.Structure.STATEMENT), 0)
-
-    def validate(self, kern, options=None):
+    def validate(self, node, options=None):
         '''
-        Perform checks that the supplied kernel can be transformed.
+        Perform checks that the supplied kernel or routine can be transformed.
 
-        :param kern: the kernel which is the target of the transformation.
-        :type kern: :py:class:`psyclone.psyGen.Kern`
+        :param node: the kernel which is the target of the transformation.
+        :type node: :py:class:`psyclone.psyGen.Kern` or \
+                    :py:class:`psyclone.psyir.nodes.Routine`
         :param options: a dictionary with options for transformations.
         :type options: dictionary of string:values or None
 
-        :raises TransformationError: if the target kernel is a built-in.
+        :raises TransformationError: if the node is not a kernel or a routine.
+        :raises TransformationError: if the target is a built-in kernel.
+        :raises TransformationError: if it is a kernel but without an \
+                                     associated PSyIR.
         :raises TransformationError: if any of the symbols in the kernel are \
-                            accessed via a module use statement.
+                                     accessed via a module use statement.
         '''
-        from psyclone.psyGen import BuiltIn
-        if isinstance(kern, BuiltIn):
-            raise TransformationError(
-                "Applying ACCRoutineTrans to a built-in kernel is not yet "
-                "supported and kernel '{0}' is of type '{1}'".
-                format(kern.name, type(kern)))
+        super(ACCRoutineTrans, self).validate(node, options)
 
-        # Perform general validation checks. In particular this checks that
-        # the PSyIR of the kernel body can be constructed.
-        super(ACCRoutineTrans, self).validate(kern, options)
-
-        # Check that the kernel does not access any data or routines via a
-        # module 'use' statement
-        sched = kern.get_kernel_schedule()
-        imported_variables = sched.symbol_table.imported_symbols
-        if imported_variables:
+        if not isinstance(node, Kern) and not isinstance(node, Routine):
             raise TransformationError(
-                "The Symbol Table for kernel '{0}' contains the following "
-                "symbol(s) with imported interface: {1}. If these symbols "
-                "represent data then they must first be converted to kernel "
-                "arguments using the KernelImportsToArguments transformation. "
-                "If the symbols represent external routines then PSyclone "
-                "cannot currently transform this kernel for execution on an "
-                "OpenACC device (issue #342).".
-                format(kern.name, [sym.name for sym in imported_variables]))
+                f"The ACCRoutineTrans must be applied to a sub-class of "
+                f"Kern or Routine but got '{type(node).__name__}'.")
+
+        # If it is a kernel call it must have an accessible implementation
+        if isinstance(node, Kern):
+            if isinstance(node, BuiltIn):
+                raise TransformationError(
+                    f"Applying ACCRoutineTrans to a built-in kernel is not yet"
+                    f" supported and kernel '{node.name}' is of type "
+                    f"'{type(node).__name__}'")
+
+            # Get the PSyIR routine from the associated kernel. If there is an
+            # exception (this could mean that there is no associated tree
+            # or that the frontend failed to convert it into PSyIR) reraise it
+            # as a TransformationError
+            try:
+                kernel_schedule = node.get_kernel_schedule()
+            except Exception as error:
+                raise TransformationError(
+                    f"Failed to create PSyIR for kernel '{node.name}'. "
+                    f"Cannot transform such a kernel.") from error
+
+            # Check that the kernel does not access any data or routines via a
+            # module 'use' statement
+            imported_variables = kernel_schedule.symbol_table.imported_symbols
+            if imported_variables:
+                raise TransformationError(
+                    f"The Symbol Table for kernel '{node.name}' contains the "
+                    f"following symbol(s) with imported interface: "
+                    f"{[sym.name for sym in imported_variables]}. If these "
+                    f"symbols represent data then they must first be converted"
+                    f" to kernel arguments using the KernelImportsToArguments "
+                    f"transformation. If the symbols represent external "
+                    f"routines then PSyclone cannot currently transform this "
+                    f"kernel for execution on an OpenACC device (issue #342).")
 
 
 class ACCKernelsTrans(RegionTrans):
@@ -3036,7 +3007,6 @@ class ACCKernelsTrans(RegionTrans):
         self.validate(node_list, options)
 
         parent = node_list[0].parent
-        schedule = node_list[0].root
         start_index = node_list[0].position
 
         if not options:
@@ -3145,7 +3115,6 @@ class ACCDataTrans(RegionTrans):
         self.validate(node_list, options)
 
         parent = node_list[0].parent
-        schedule = node_list[0].root
         start_index = node_list[0].position
 
         # Create a directive containing the nodes in node_list and insert it.
@@ -3243,7 +3212,7 @@ class KernelImportsToArguments(Transformation):
         except SymbolError as err:
             raise TransformationError(
                 "Kernel '{0}' contains undeclared symbol: {1}".format(
-                    node.name, str(err.value)))
+                    node.name, str(err.value))) from err
 
         symtab = kernel.symbol_table
         for container in symtab.containersymbols:
@@ -3365,7 +3334,6 @@ __all__ = ["KernelTrans",
            "ACCParallelTrans",
            "MoveTrans",
            "Dynamo0p3RedundantComputationTrans",
-           "GOLoopSwapTrans",
            "Dynamo0p3AsyncHaloExchangeTrans",
            "Dynamo0p3KernelConstTrans",
            "ACCEnterDataTrans",

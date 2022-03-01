@@ -3608,6 +3608,7 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
     isched = colored("InvokeSchedule", InvokeSchedule._colour)
     ompparallel = colored("OMPParallelDirective", Directive._colour)
     ompdo = colored("OMPDoDirective", Directive._colour)
+    ompdefault = colored("OMPDefaultClause", Directive._colour)
     gsum = colored("GlobalSum", GlobalSum._colour)
     loop = colored("Loop", Loop._colour)
     call = colored("BuiltIn", BuiltIn._colour)
@@ -3647,6 +3648,7 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
             6*indent + lit_one +
             6*indent + sched + "[]\n" +
             7*indent + "0: " + call + " x_innerproduct_y(asum,f1,f2)\n" +
+            2*indent + ompdefault + "[]\n" +
             indent + "1: " + gsum + "[scalar='asum']\n" +
             indent + "2: " + ompparallel + "[]\n" +
             2*indent + sched + "[]\n" +
@@ -3660,6 +3662,7 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
             6*indent + lit_one +
             6*indent + sched + "[]\n" +
             7*indent + "0: " + call + " inc_a_times_x(asum,f1)\n" +
+            2*indent + ompdefault + "[]\n" +
             indent + "3: " + ompparallel + "[]\n" +
             2*indent + sched + "[]\n" +
             3*indent + "0: " + ompdo + "[reprod=True]\n" +
@@ -3672,6 +3675,7 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
             6*indent + lit_one +
             6*indent + sched + "[]\n" +
             7*indent + "0: " + call + " sum_x(bsum,f2)\n" +
+            2*indent + ompdefault + "[]\n" + 
             indent + "4: " + gsum + "[scalar='bsum']\n")
         if not annexed:
             expected = expected.replace("nannexed", "ndofs")
@@ -3690,6 +3694,7 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
             6*indent + lit_one +
             6*indent + sched + "[]\n" +
             7*indent + "0: " + call + " x_innerproduct_y(asum,f1,f2)\n" +
+            2*indent + ompdefault + "[]\n" + 
             indent + "1: " + ompparallel + "[]\n" +
             2*indent + sched + "[]\n" +
             3*indent + "0: " + ompdo + "[]\n" +
@@ -3702,6 +3707,7 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
             6*indent + lit_one +
             6*indent + sched + "[]\n" +
             7*indent + "0: " + call + " inc_a_times_x(asum,f1)\n" +
+            2*indent + ompdefault + "[]\n" + 
             indent + "2: " + ompparallel + "[]\n" +
             2*indent + sched + "[]\n" +
             3*indent + "0: " + ompdo + "[reprod=True]\n" +
@@ -3713,7 +3719,8 @@ def test_reprod_view(capsys, monkeypatch, annexed, dist_mem):
             6*indent + lit_uninit +
             6*indent + lit_one +
             6*indent + sched + "[]\n" +
-            7*indent + "0: " + call + " sum_x(bsum,f2)\n")
+            7*indent + "0: " + call + " sum_x(bsum,f2)\n" +
+            2*indent + ompdefault + "[]" )
     if expected not in result:
         print("Expected ...")
         print(expected)

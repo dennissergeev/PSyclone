@@ -624,6 +624,8 @@ def test_omp_transform():
                            name="invoke_loop1", dist_mem=False)
     schedule = invoke.schedule
 
+    print(str(invoke.gen()))
+
     prt = ProfileTrans()
     omp_loop = GOceanOMPLoopTrans()
     omp_par = OMPParallelTrans()
@@ -636,7 +638,7 @@ def test_omp_transform():
     correct = (
         "      CALL profile_psy_data%PreStart(\"psy_test27_loop_swap\", "
         "\"invoke_loop1:bc_ssh_code:r0\", 0, 0)\n"
-        "      !$omp parallel default(shared), private(i,j)\n"
+        "      !$omp parallel default(shared) private(i,j)\n"
         "      !$omp do schedule(static)\n"
         "      DO j=t%internal%ystart,t%internal%ystop\n"
         "        DO i=t%internal%xstart,t%internal%xstop\n"
@@ -658,7 +660,7 @@ def test_omp_transform():
     correct = \
         "CALL profile_psy_data%PreStart(\"psy_test27_loop_swap\", " + \
         '''"invoke_loop1:bc_ssh_code:r0", 0, 0)
-      !$omp parallel default(shared), private(i,j)
+      !$omp parallel default(shared) private(i,j)
       CALL profile_psy_data_1%PreStart("psy_test27_loop_swap", ''' + \
         '''"invoke_loop1:bc_ssh_code:r1", 0, 0)
       !$omp do schedule(static)

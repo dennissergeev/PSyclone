@@ -86,7 +86,7 @@ def test_accenterdatadirective_gencode_1():
         str(psy.gen)
     assert ("ACCEnterData directive did not find any data to copyin. Perhaps "
             "there are no ACCParallel or ACCKernels directives within the "
-            "region." in str(excinfo.value))
+            "region?" in str(excinfo.value))
 
     # Test that the same error is produced by the begin_string() which is used
     # by the PSyIR backend
@@ -95,7 +95,7 @@ def test_accenterdatadirective_gencode_1():
         sched[0].begin_string()
     assert ("ACCEnterData directive did not find any data to copyin. Perhaps "
             "there are no ACCParallel or ACCKernels directives within the "
-            "region." in str(excinfo.value))
+            "region?" in str(excinfo.value))
 
 
 # (2/4) Method gen_code
@@ -115,7 +115,7 @@ def test_accenterdatadirective_gencode_2():
         str(psy.gen)
     assert ("ACCEnterData directive did not find any data to copyin. Perhaps "
             "there are no ACCParallel or ACCKernels directives within the "
-            "region." in str(excinfo.value))
+            "region?" in str(excinfo.value))
 
 
 # (3/4) Method gen_code

@@ -195,7 +195,7 @@ class ACCEnterDataDirective(ACCStandaloneDirective):
             raise GenerationError(
                 "ACCEnterData directive did not find any data to copyin. "
                 "Perhaps there are no ACCParallel or ACCKernels directives "
-                "within the region.")
+                "within the region?")
         parent.add(DirectiveGen(parent, "acc", "begin", "enter data",
                                 copy_in_str))
         # 5. Call an API-specific subclass of this class in case
